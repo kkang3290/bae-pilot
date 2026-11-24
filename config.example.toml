@@ -1,0 +1,31 @@
+# 所有相对路径均相对于当前工作目录。
+db_path = ".runtime/baepilot.sqlite"
+provider = "fake"
+model = "claude-opus-5-5"
+model_timeout_s = 30
+model_max_tokens = 2000
+model_max_calls = 8
+refusal_fallback = true
+
+debounce_s = 0.5
+max_wait_s = 2.0
+min_send_interval_s = 1.0
+reply_ttl_s = 60
+max_parallel = 4
+max_pending_jobs = 1000
+max_job_attempts = 3
+max_reply_chars = 1200
+context_message_limit = 40
+max_context_chars = 32000
+
+[[accounts]]
+channel = "mock"
+account_id = "demo-account"
+self_id = "self"
+
+[[conversations]]
+channel = "mock"
+account_id = "demo-account"
+conversation_id = "demo-chat"
+mode = "auto"
+style = "自然、简短、认真倾听；不虚构经历或承诺。"

@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=80"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bae-pilot"
+version = "0.1.0"
+description = "Local-first emotional conversation agent with explicit channel boundaries"
+requires-python = ">=3.11"
+dependencies = [
+  "aiosqlite>=0.20,<1",
+  "fastapi>=0.165,<0.166",
+  "langgraph>=1.2.24,<1.3",
+  "pydantic>=2.14,<3",
+  "uvicorn>=0.30,<1",
+]
+
+[project.optional-dependencies]
+anthropic = ["anthropic>=2.13,<3"]
+dev = ["pytest>=9.2,<10", "pytest-asyncio>=1,<2", "httpx>=0.28,<1", "ruff>=0.11,<1", "setuptools>=80"]
+
+[project.scripts]
+baepilot = "bae_pilot.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+bae_pilot = ["storage/*.sql"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-p no:langsmith_plugin"
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+ignore = ["E501"]
