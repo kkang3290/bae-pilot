@@ -1,7 +1,6 @@
 """Single-process durable scheduler with per-conversation serialization."""
 
 import asyncio
-import json
 import logging
 import time
 
@@ -38,7 +37,7 @@ class Runtime:
     async def start(self, *, worker=True):
         if self.store is not None:
             raise AppError("runtime_already_started")
-        self.store = await Store.open(self.settings.db_path)
+        self.store = await Store.open(self.settings)
         try:
             await self.store.recover(self.clock())
             if self.provider is None:
@@ -110,7 +109,7 @@ class Runtime:
         snapshot = None
         try:
             if job["kind"] == "memory":
-                await self.memory.update(key, json.loads(job["payload"])["source_version"])
+                await self.memory.update(key, job["payload"]["source_version"])
             else:
                 rule = self.settings.rule_for(key)
                 if rule is not None:

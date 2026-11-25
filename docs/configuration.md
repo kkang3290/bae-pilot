@@ -10,21 +10,23 @@
 
 没有指定文件时不会自动发现当前目录的配置。所有相对路径相对于**启动时工作目录**，不是 TOML 所在目录。程序不自动加载 `.env`；不要直接 `source .env.example`，它只是说明模板。未知配置字段、重复账号、重复会话，以及引用未注册账号的规则均拒绝启动。
 
-`baepilot demo` 是例外：不读取上述外部配置和模型环境选择，固定使用临时数据库、Fake、Mock。
+`baepilot demo` 是例外：只读取 `BAEPILOT_DATABASE_URL`（未设置时使用内置本地 URL），不读取 TOML、业务 schema 或模型环境选择；固定使用新建临时 PostgreSQL schema、Fake、Mock。
 
 ## 环境变量与秘密
 
 | 环境变量 | 用途 |
 |---|---|
 | `BAEPILOT_CONFIG` | TOML 文件路径，CLI `--config` 优先 |
-| `BAEPILOT_DB_PATH` | 覆盖数据库路径 |
+| `BAEPILOT_DATABASE_URL` | PostgreSQL URL，必须包含数据库名；凭据按秘密处理 |
+| `BAEPILOT_DATABASE_SCHEMA` | 业务 schema，默认 baepilot |
+| `BAEPILOT_TEST_DATABASE_URL` | pytest 专用合成数据库 URL，测试无默认回退 |
 | `BAEPILOT_PROVIDER` | `fake` 或 `anthropic` |
 | `BAEPILOT_API_TOKEN` | 本地 HTTP 管理 token；启动 HTTP 必须设置 |
 | `ANTHROPIC_API_KEY` | 仅显式启用 Anthropic 时由官方 SDK 解析 |
 
 管理 token 至少 16 个字符，拒绝模板中的占位值，建议用 `secrets.token_urlsafe(32)`。不要把真实 token 写进 TOML、提交到 Git、写进聊天或命令示例。HTTP 客户端和服务需使用相同 token。管理 token 拥有整个实例的读取及控制权限，**不是多用户权限系统**。
 
-发现 API Key 不会隐式启用真实模型。`init-db` 和离线 `status` 直接使用仓储，不创建模型客户端。
+发现 API Key 不会隐式启用真实模型。`init-db` 和 `status` 直接连接 PostgreSQL 仓储，不创建模型客户端。
 
 ## 账号与精确会话白名单
 
@@ -65,7 +67,8 @@ style = "自然、简短、认真倾听；不虚构经历或承诺。"
 
 | 字段 | 默认 | 含义 |
 |---|---:|---|
-| `db_path` | `.runtime/baepilot.sqlite` | SQLite 数据路径，旁边保留实例锁文件 |
+| `database_url` | `postgresql://localhost:5432/baepilot` | 唯一数据库，推荐通过环境提供凭据 |
+| `database_schema` | `baepilot` | 专用 schema；小写字母/数字/下划线，不允许 public、information_schema、pg_* |
 | `debounce_s` | 0.5 | 连续消息静默合并时间，0–30 秒 |
 | `max_wait_s` | 2 | 最大合并时间，必须 ≥ 静默窗口，最多 60 秒 |
 | `min_send_interval_s` | 1 | 本会话成功发送后的最小发送间隔，最多 3600 秒 |

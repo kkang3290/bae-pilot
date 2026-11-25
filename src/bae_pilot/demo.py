@@ -1,7 +1,11 @@
 """Deliberately synthetic end-to-end demonstration; never inherits real-model settings."""
 
-import tempfile
-from pathlib import Path
+import os
+import uuid
+from contextlib import asynccontextmanager
+
+import psycopg
+from psycopg import sql
 
 from bae_pilot.config import Settings
 from bae_pilot.connectors.mock import MockConnector
@@ -15,16 +19,55 @@ def require(condition):
     return True
 
 
-async def run_demo():
-    with tempfile.TemporaryDirectory(prefix="baepilot-demo-") as directory:
-        runtime = Runtime(
-            Settings(
-                db_path=Path(directory) / "demo.sqlite",
-                provider="fake",
-                debounce_s=0,
-                min_send_interval_s=0,
-            )
+@asynccontextmanager
+async def temporary_demo_database():
+    """Only a freshly created, marked schema can be removed; never use the configured schema."""
+    schema = "baepilot_demo_" + uuid.uuid4().hex
+    owner = "baepilot-demo:" + uuid.uuid4().hex
+    database = {}
+    if "BAEPILOT_DATABASE_URL" in os.environ:
+        database["database_url"] = os.environ["BAEPILOT_DATABASE_URL"]
+    settings = Settings(
+        **database, database_schema=schema, provider="fake", debounce_s=0, min_send_interval_s=0
+    )
+    connection = None
+    try:
+        connection = await psycopg.AsyncConnection.connect(
+            settings.database_url.get_secret_value(), autocommit=True, connect_timeout=5
         )
+        async with connection.transaction():
+            await connection.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
+            await connection.execute(
+                sql.SQL("COMMENT ON SCHEMA {} IS {}").format(
+                    sql.Identifier(schema), sql.Literal(owner)
+                )
+            )
+        try:
+            yield settings
+        finally:
+            async with connection.transaction():
+                cursor = await connection.execute(
+                    "SELECT obj_description(oid, 'pg_namespace') FROM pg_namespace "
+                    "WHERE nspname=%s AND nspowner=(SELECT oid FROM pg_roles WHERE rolname=current_user)",
+                    (schema,),
+                )
+                marker = await cursor.fetchone()
+                await cursor.close()
+                if marker != (owner,):
+                    raise AppError("demo_schema_ownership_lost", 409)
+                await connection.execute(
+                    sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema))
+                )
+    except psycopg.Error:
+        raise AppError("database_unavailable", 503) from None
+    finally:
+        if connection is not None:
+            await connection.close()
+
+
+async def run_demo():
+    async with temporary_demo_database() as settings:
+        runtime = Runtime(settings)
         await runtime.start(worker=False)
         checks = {}
         try:
@@ -37,8 +80,9 @@ async def run_demo():
             )
             await runtime.ingest(first)
             await runtime.drain()
+            deliveries = await runtime.store.outbox(first.key)
             checks["automatic_reply"] = require(
-                (await runtime.store.outbox(first.key))[0]["status"] == "sent"
+                len(deliveries) == 1 and deliveries[0]["status"] == "sent"
             )
             repeated = await runtime.ingest(first)
             await runtime.drain()
@@ -90,7 +134,8 @@ async def run_demo():
                 reconciled["status"] == "sent" and len(await runtime.store.outbox(first.key)) == 3
             )
             return {
-                "mode": "offline",
+                "mode": "synthetic",
+                "database": "postgresql",
                 "provider": "fake",
                 "connector": "mock",
                 "checks": checks,

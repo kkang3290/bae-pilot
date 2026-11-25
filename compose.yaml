@@ -1,0 +1,19 @@
+# Local synthetic development/testing only. Production needs a least-privilege role and TLS.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: baepilot
+      POSTGRES_USER: baepilot
+      POSTGRES_PASSWORD: ${BAEPILOT_POSTGRES_PASSWORD:?Set BAEPILOT_POSTGRES_PASSWORD first}
+    ports:
+      - "127.0.0.1:${BAEPILOT_POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - baepilot_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+volumes:
+  baepilot_postgres:

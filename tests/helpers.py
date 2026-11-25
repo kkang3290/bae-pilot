@@ -21,12 +21,12 @@ def message(text="你好", **changes):
 
 
 @asynccontextmanager
-async def running(tmp_path, **options):
+async def running(db_config, **options):
     provider = options.pop("provider", None)
     clock = options.pop("clock", None)
     settings = Settings(
         **{
-            "db_path": tmp_path / "runtime.sqlite",
+            **db_config,
             "debounce_s": 0,
             "min_send_interval_s": 0,
             **options,

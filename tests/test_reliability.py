@@ -9,7 +9,7 @@ from bae_pilot.services.runtime import Runtime
 from tests.helpers import message, running
 
 
-async def test_short_path_can_escalate_without_sending_its_initial_draft(tmp_path):
+async def test_short_path_can_escalate_without_sending_its_initial_draft(db_config):
     from bae_pilot.agents.schemas import TalkResult
 
     class Escalate(FakeProvider):
@@ -18,7 +18,7 @@ async def test_short_path_can_escalate_without_sending_its_initial_draft(tmp_pat
                 return TalkResult(reply="不可发送的旧稿", requires_deep=True)
             return await super().complete(role, context, schema)
 
-    async with running(tmp_path, provider=Escalate()) as r:
+    async with running(db_config, provider=Escalate()) as r:
         incoming = message()
         await r.ingest(incoming)
         await r.drain()
@@ -35,8 +35,8 @@ async def test_short_path_can_escalate_without_sending_its_initial_draft(tmp_pat
         assert "不可发送" not in (await r.store.outbox(incoming.key))[0]["text"]
 
 
-async def test_exhausted_model_budget_hands_off_without_outbox(tmp_path):
-    async with running(tmp_path, model_max_calls=1, max_job_attempts=1) as r:
+async def test_exhausted_model_budget_hands_off_without_outbox(db_config):
+    async with running(db_config, model_max_calls=1, max_job_attempts=1) as r:
         incoming = message("复杂的沟通")
         await r.ingest(incoming)
         await r.drain()
@@ -45,14 +45,14 @@ async def test_exhausted_model_budget_hands_off_without_outbox(tmp_path):
         assert await r.store.outbox(incoming.key) == []
 
 
-async def test_memory_failure_cannot_undo_successful_send(tmp_path):
+async def test_memory_failure_cannot_undo_successful_send(db_config):
     class BrokenMemory(FakeProvider):
         async def complete(self, role, context, schema):
             if role == "memory":
                 raise ValueError("simulated external model error")
             return await super().complete(role, context, schema)
 
-    async with running(tmp_path, provider=BrokenMemory(), max_job_attempts=1) as r:
+    async with running(db_config, provider=BrokenMemory(), max_job_attempts=1) as r:
         incoming = message()
         await r.ingest(incoming)
         await r.drain()
@@ -85,8 +85,8 @@ async def test_old_memory_cannot_overwrite_newer_and_evidence_is_scoped(runtime)
 
 
 @pytest.mark.parametrize("accepted_by_channel", [True, False])
-async def test_crash_during_send_recovers_unknown_without_resending(tmp_path, accepted_by_channel):
-    settings = Settings(db_path=tmp_path / "crash.sqlite", debounce_s=0, min_send_interval_s=0)
+async def test_crash_during_send_recovers_unknown_without_resending(db_config, accepted_by_channel):
+    settings = Settings(**db_config, debounce_s=0, min_send_interval_s=0)
     r = Runtime(settings)
     await r.start(worker=False)
     incoming = message()
@@ -121,11 +121,11 @@ async def test_crash_during_send_recovers_unknown_without_resending(tmp_path, ac
         await recovered.close()
 
 
-async def test_pause_reports_already_started_send_and_blocks_later_claims(tmp_path):
+async def test_pause_reports_already_started_send_and_blocks_later_claims(db_config):
     from bae_pilot.connectors.mock import MockConnector
 
     entered, release = asyncio.Event(), asyncio.Event()
-    async with running(tmp_path) as r:
+    async with running(db_config) as r:
 
         class SlowTransport(MockConnector):
             async def send(self, intent):
@@ -148,7 +148,7 @@ async def test_pause_reports_already_started_send_and_blocks_later_claims(tmp_pa
         assert len(await r.store.outbox(incoming.key)) == 1
 
 
-async def test_rate_limit_uses_all_connector_acknowledgements_not_mock_receipts(tmp_path):
+async def test_rate_limit_uses_all_connector_acknowledgements_not_mock_receipts(db_config):
     class Clock:
         value = 1000.0
 
@@ -163,7 +163,7 @@ async def test_rate_limit_uses_all_connector_acknowledgements_not_mock_receipts(
 
     clock = Clock()
     r = Runtime(
-        Settings(db_path=tmp_path / "rate.sqlite", debounce_s=0, min_send_interval_s=10),
+        Settings(**db_config, debounce_s=0, min_send_interval_s=10),
         clock=clock,
     )
     await r.start(worker=False)
@@ -181,8 +181,8 @@ async def test_rate_limit_uses_all_connector_acknowledgements_not_mock_receipts(
         await r.close()
 
 
-async def test_pending_event_survives_restart_without_being_lost(tmp_path):
-    settings = Settings(db_path=tmp_path / "pending.sqlite", debounce_s=0)
+async def test_pending_event_survives_restart_without_being_lost(db_config):
+    settings = Settings(**db_config, debounce_s=0)
     r = Runtime(settings)
     await r.start(worker=False)
     await r.ingest(message())
@@ -194,15 +194,3 @@ async def test_pending_event_survives_restart_without_being_lost(tmp_path):
         assert (await recovered.store.outbox(message().key))[0]["status"] == "sent"
     finally:
         await recovered.close()
-
-
-async def test_database_symlink_is_rejected_without_touching_target(tmp_path):
-    from bae_pilot.storage.repositories import Store
-
-    target = tmp_path / "valuable.data"
-    target.write_bytes(b"do-not-modify")
-    link = tmp_path / "database.sqlite"
-    link.symlink_to(target)
-    with pytest.raises(AppError, match="unsafe_database_path"):
-        await Store.open(link)
-    assert target.read_bytes() == b"do-not-modify"

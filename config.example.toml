@@ -1,5 +1,6 @@
-# 所有相对路径均相对于当前工作目录。
-db_path = ".runtime/baepilot.sqlite"
+# 数据库凭据通过 BAEPILOT_DATABASE_URL 提供，不要把密码写进 TOML。
+# 默认连接 postgresql://localhost:5432/baepilot；仅支持 PostgreSQL。
+database_schema = "baepilot"
 provider = "fake"
 model = "claude-opus-5-5"
 model_timeout_s = 30

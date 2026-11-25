@@ -4,8 +4,9 @@ import os
 import tomllib
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
-from pydantic import Field, SecretStr, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 
 from bae_pilot.domain import Contract, ConversationKey, Identifier, Mode
 
@@ -25,7 +26,10 @@ class ConversationRule(ConversationKey):
 
 
 class Settings(Contract):
-    db_path: Path = Path(".runtime/baepilot.sqlite")
+    database_url: SecretStr = Field(
+        default=SecretStr("postgresql://localhost:5432/baepilot"), repr=False
+    )
+    database_schema: str = Field(default="baepilot", pattern=r"^[a-z_][a-z0-9_]{0,62}$")
     provider: Literal["fake", "anthropic"] = "fake"
     model: str = "claude-opus-5-5"
     model_timeout_s: float = Field(default=30, gt=0, le=300)
@@ -45,6 +49,21 @@ class Settings(Contract):
     max_context_chars: int = Field(default=32000, ge=1000, le=200000)
     accounts: tuple[Account, ...] = (Account(),)
     conversations: tuple[ConversationRule, ...] = (ConversationRule(),)
+
+    @field_validator("database_url")
+    @classmethod
+    def postgres_url(cls, value):
+        parsed = urlsplit(value.get_secret_value())
+        if parsed.scheme not in ("postgresql", "postgres") or not parsed.path.strip("/"):
+            raise ValueError("a PostgreSQL URL with an explicit database is required")
+        return value
+
+    @field_validator("database_schema")
+    @classmethod
+    def application_schema(cls, value):
+        if value in ("public", "information_schema") or value.startswith("pg_"):
+            raise ValueError("a dedicated application schema is required")
+        return value
 
     @model_validator(mode="after")
     def consistent(self):
@@ -81,7 +100,8 @@ def load_settings(path: str | Path | None = None) -> Settings:
         with Path(selected).open("rb") as stream:
             data = tomllib.load(stream)
     for env, field in [
-        ("BAEPILOT_DB_PATH", "db_path"),
+        ("BAEPILOT_DATABASE_URL", "database_url"),
+        ("BAEPILOT_DATABASE_SCHEMA", "database_schema"),
         ("BAEPILOT_PROVIDER", "provider"),
         ("BAEPILOT_API_TOKEN", "api_token"),
     ]:

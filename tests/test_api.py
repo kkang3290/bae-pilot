@@ -3,13 +3,13 @@ import pytest
 
 
 @pytest.fixture
-async def client(tmp_path):
+async def client(db_config):
     from bae_pilot.app import create_app
     from bae_pilot.config import Settings
 
     app = create_app(
         Settings(
-            db_path=tmp_path / "api.sqlite",
+            **db_config,
             api_token="test-management-token",
             debounce_s=0,
             min_send_interval_s=0,
@@ -100,13 +100,13 @@ async def test_invalid_payload_and_duplicate_conflict_have_correct_statuses(clie
     assert (await http.get(PATH + "/messages?limit=10001", headers=HEADERS)).status_code == 422
 
 
-async def test_http_server_requires_explicit_management_secret(tmp_path):
+async def test_http_server_requires_explicit_management_secret():
     from bae_pilot.app import create_app
     from bae_pilot.config import Settings
     from bae_pilot.domain import AppError
 
     with pytest.raises(AppError, match="api_token_required"):
-        create_app(Settings(db_path=tmp_path / "no-token.sqlite"))
+        create_app(Settings())
 
 
 @pytest.mark.parametrize(

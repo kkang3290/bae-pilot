@@ -1,1 +1,1 @@
-"""SQLite persistence and local process ownership."""
+"""PostgreSQL persistence and session-scoped instance ownership."""

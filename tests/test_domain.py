@@ -66,6 +66,43 @@ def test_configuration_rejects_unknown_fields_and_invalid_windows():
         Settings(typo=True)
 
 
+@pytest.mark.parametrize(
+    "update",
+    [
+        {"database_url": "https://localhost/baepilot"},
+        {"database_url": "postgresql://localhost/"},
+        {"database_schema": "public"},
+        {"database_schema": "pg_catalog"},
+        {"database_schema": "bad; DROP SCHEMA public"},
+    ],
+)
+def test_database_configuration_rejects_unsafe_targets(update):
+    from bae_pilot.config import Settings
+
+    with pytest.raises(ValidationError):
+        Settings(**update)
+
+
+def test_database_credentials_are_hidden_and_environment_overrides_toml(tmp_path, monkeypatch):
+    from bae_pilot.config import load_settings
+
+    config = tmp_path / "database.toml"
+    config.write_text(
+        'database_url="postgresql://file_user:file-secret@localhost/file_db"\n'
+        'database_schema="from_file"\n'
+    )
+    monkeypatch.setenv("BAEPILOT_DATABASE_URL", "postgresql://env_user:env-secret@localhost/env_db")
+    monkeypatch.setenv("BAEPILOT_DATABASE_SCHEMA", "from_env")
+    settings = load_settings(config)
+    assert settings.database_url.get_secret_value() == (
+        "postgresql://env_user:env-secret@localhost/env_db"
+    )
+    assert settings.database_schema == "from_env"
+    assert "env-secret" not in repr(settings)
+    assert "file-secret" not in repr(settings)
+    assert settings.provider == "fake"
+
+
 def test_secrets_and_provider_opt_in_are_separate(monkeypatch):
     from bae_pilot.config import load_settings
 

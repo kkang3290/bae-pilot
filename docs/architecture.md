@@ -2,7 +2,7 @@
 
 ## 目标与边界
 
-BaePilot 是本地优先的情感类对话系统。正常流程是对**明确授权的会话自动回复**，而不是每条生成草稿等人审批。首版提供完整的离线开发闭环：Mock 渠道 + Fake 模型 + 实际 LangGraph + SQLite + 自动发送调度。
+BaePilot 是本地优先的情感类对话系统。正常流程是对**明确授权的会话自动回复**，而不是每条生成草稿等人审批。提供完整的合成开发闭环：Mock 渠道 + Fake 模型 + 实际 LangGraph + PostgreSQL + 自动发送调度；不访问真实模型/平台，但需要数据库连接。
 
 首版不是已接入个人微信的成品，不具备生产级账号托管或多节点能力，也不承诺情感判断正确。真实平台的稳定性、登录、兼容性与平台规则留给后续 Connector 实践。
 
@@ -13,7 +13,7 @@ HTTP / CLI / 未来平台 Connector
              ↓
 Ingestion：身份绑定、校验、去重、入库、更新修订号
              ↓
-SQLite jobs → Runtime Worker → 上下文快照
+PostgreSQL jobs → Runtime Worker → 上下文快照
                                   ↓
                         编译后的 LangGraph
                                   ↓
@@ -82,7 +82,7 @@ pending → cancelled / superseded
 
 ## 持久化与恢复
 
-SQLite 保存业务状态：事件、会话、控制、运行、任务、Outbox、记忆、审计及 Mock 回执。单个应用持有数据库实例锁；仅支持一个服务进程、一个 Uvicorn worker。
+PostgreSQL 是唯一业务存储：事件、会话、控制、运行、任务、Outbox、记忆、审计及 Mock 回执均在同一专用 schema。使用 Psycopg 异步连接、短事务、JSONB、原生时间和递增 identity。单个应用通过专用连接持有 database/schema 级 session advisory lock；仍仅支持一个服务进程、一个 Uvicorn worker，不使用 transaction pooling。连接丢失不会自动重连继续发送。详见 [数据库与记忆](database.md)。
 
 首版**没有启用 LangGraph checkpoint**。重启会恢复安全的待处理任务，必要时重新执行无发送副作用的生成阶段。业务结果和 Outbox 是恢复依据，不承诺逐节点、逐 token 续跑。遗留的发送中状态必须先转为未知结果。
 

@@ -1,4 +1,4 @@
-"""Local management commands. Demo never loads credentials or external configuration."""
+"""Local management commands. Demo reads only database connectivity, never model configuration."""
 
 import argparse
 import asyncio
@@ -18,7 +18,7 @@ def emit(value, *, stream=None):
 
 
 async def database_command(settings, command):
-    store = await Store.open(settings.db_path)
+    store = await Store.open(settings)
     try:
         return await store.status() if command == "status" else {"status": "initialized"}
     finally:
@@ -26,12 +26,12 @@ async def database_command(settings, command):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(prog="baepilot", description="BaePilot 本地运行与离线演示")
+    parser = argparse.ArgumentParser(prog="baepilot", description="BaePilot 本地 API 与合成演示")
     parser.add_argument("--config", help="TOML 配置路径")
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("demo", help="合成消息离线闭环，不读取外部模型配置")
+    commands.add_parser("demo", help="PostgreSQL 临时 schema 合成闭环，不读取外部模型配置")
     commands.add_parser("init-db", help="初始化数据库（不调用模型）")
-    commands.add_parser("status", help="离线数据库状态；运行服务时使用 HTTP 状态接口")
+    commands.add_parser("status", help="数据库状态；运行服务时使用 HTTP 状态接口")
     serve = commands.add_parser("serve", help="启动单进程本地管理 API")
     serve.add_argument("--host", choices=["127.0.0.1", "::1"], default="127.0.0.1")
     serve.add_argument("--port", type=int, choices=range(1, 65536), default=8765, metavar="PORT")

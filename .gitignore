@@ -15,8 +15,5 @@ htmlcov/
 build/
 dist/
 .runtime/
-*.sqlite*
-*.db
-*.db-*
 *.log
 .DS_Store

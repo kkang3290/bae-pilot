@@ -7,7 +7,7 @@ from bae_pilot.services.runtime import Runtime
 from tests.helpers import message, running
 
 
-async def test_slow_background_memory_does_not_block_foreground_with_one_slot(tmp_path):
+async def test_slow_background_memory_does_not_block_foreground_with_one_slot(db_config):
     entered, release, second_sent = asyncio.Event(), asyncio.Event(), asyncio.Event()
 
     class SlowMemory(FakeProvider):
@@ -18,9 +18,7 @@ async def test_slow_background_memory_does_not_block_foreground_with_one_slot(tm
             return await super().complete(role, context, schema)
 
     r = Runtime(
-        Settings(
-            db_path=tmp_path / "memory.sqlite", debounce_s=0, min_send_interval_s=0, max_parallel=1
-        ),
+        Settings(**db_config, debounce_s=0, min_send_interval_s=0, max_parallel=1),
         provider=SlowMemory(),
     )
     await r.start(worker=False)
@@ -51,9 +49,9 @@ async def test_slow_background_memory_does_not_block_foreground_with_one_slot(tm
         await r.close()
 
 
-async def test_context_budget_includes_style_and_memory_not_only_message_text(tmp_path):
+async def test_context_budget_includes_style_and_memory_not_only_message_text(db_config):
     settings = Settings(
-        db_path=tmp_path / "context.sqlite",
+        **db_config,
         debounce_s=0,
         max_context_chars=1000,
         max_job_attempts=1,
@@ -86,7 +84,7 @@ async def test_unsupported_media_is_not_treated_as_understood_text(runtime):
     assert await runtime.store.outbox(incoming.key) == []
 
 
-async def test_failed_memory_extraction_cannot_reference_another_conversation(tmp_path):
+async def test_failed_memory_extraction_cannot_reference_another_conversation(db_config):
     from bae_pilot.agents.schemas import MemoryItem, MemoryUpdate
 
     class WrongEvidence(FakeProvider):
@@ -99,20 +97,20 @@ async def test_failed_memory_extraction_cannot_reference_another_conversation(tm
                 )
             return await super().complete(role, context, schema)
 
-    async with running(tmp_path, provider=WrongEvidence(), max_job_attempts=1) as r:
+    async with running(db_config, provider=WrongEvidence(), max_job_attempts=1) as r:
         await r.ingest(message())
         await r.drain()
         assert await r.store.memories(message().key) == []
         assert (await r.store.outbox(message().key))[0]["status"] == "sent"
 
 
-async def test_account_pause_reports_only_its_own_inflight_sends(tmp_path):
+async def test_account_pause_reports_only_its_own_inflight_sends(db_config):
     from bae_pilot.config import Account
 
     entered, release = asyncio.Event(), asyncio.Event()
     r = Runtime(
         Settings(
-            db_path=tmp_path / "accounts.sqlite",
+            **db_config,
             debounce_s=0,
             min_send_interval_s=0,
             accounts=[Account(), Account(account_id="second-account")],

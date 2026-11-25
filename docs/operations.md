@@ -3,6 +3,7 @@
 ## 启动与停止
 
 ```bash
+export BAEPILOT_DATABASE_URL="<你自行配置的 PostgreSQL URL>"
 export BAEPILOT_API_TOKEN="<你自行生成的高熵 token>"
 .venv/bin/baepilot --config config.example.toml init-db
 .venv/bin/baepilot --config config.example.toml serve
@@ -10,7 +11,7 @@ export BAEPILOT_API_TOKEN="<你自行生成的高熵 token>"
 
 不要真的使用上面的说明性占位字符串。初始化命令不需要管理 token 或真实模型凭据；只有 HTTP 服务要求 token。端口默认 8765，可通过 `serve --port 8766` 更改，host 只能是 loopback。使用 Ctrl-C 正常退出；本项目不安装系统服务。
 
-**只允许一个实例和一个 Uvicorn worker。** 同数据库第二实例会报 `database_in_use`，`status` 离线命令也需要获得独占实例锁。服务运行时用 HTTP `/api/v1/status`，不要同时开 CLI 仓储。不要通过删除锁文件解决冲突：锁跟随打开的文件句柄，删文件反而可能破坏互斥。
+**只允许一个实例和一个 Uvicorn worker。** 同 database/schema 第二实例会报 `database_in_use`，CLI `status` 也需要获得独占实例锁。服务运行时用 HTTP `/api/v1/status`，不要同时开 CLI 仓储。锁由 PostgreSQL session advisory lock 实现，连接关闭自动释放，不存在本地锁文件；不要手动解锁仍在运行的实例。必须使用数据库直连或保持会话的连接方式，不支持 PgBouncer transaction pooling。断开连接后不自动重连继续发送，需排障重启并按 unknown 核对遗留发送。
 
 ## 停止开关与人工接管
 
@@ -45,7 +46,7 @@ export BAEPILOT_API_TOKEN="<你自行生成的高熵 token>"
 
 ## 任务与恢复
 
-事件、任务、运行和 Outbox 均在 SQLite 中。重启时：
+事件、任务、运行和 Outbox 均在 PostgreSQL 中。重启时：
 
 - pending 工作保留；安全的 running 生成/记忆任务重新排队，已有更新任务时以更新任务为准。
 - running 运行记录标 interrupted，允许重新生成，但不是 LangGraph 节点级 checkpoint 恢复。
@@ -56,15 +57,15 @@ export BAEPILOT_API_TOKEN="<你自行生成的高熵 token>"
 
 ## 数据、隐私与备份
 
-数据库保存聊天正文、模型输出、模拟回执和带证据记忆，均可能是敏感内容。默认目录权限尽量为 0700、数据库和锁文件为 0600；已有文件权限、宿主磁盘和备份安全仍由运行者负责。SQLite **没有本项目层面的静态加密**。
+数据库保存聊天正文、模型输出、模拟回执和带证据记忆，均可能是敏感内容。连接 URL 含凭据，应从环境/秘密管理提供，不打印到日志。生产使用专用最小权限角色；远程连接配置 TLS 验证，限制网络入口。本地 Compose 只绑定 loopback，但其开发角色不可用于生产。PostgreSQL **不代表已经启用静态加密**；数据库宿主、数据卷、备份和凭据安全由部署者配置。
 
 当前面向合成数据开发，没有自动保留期、逐会话删除/导出、审计脱敏导出或备份轮换功能。**不要在完善授权、保留/删除及备份策略前接入真实私人聊天。** 不是生产隐私合规方案。
 
-备份建议：先全局停止、查看在途与 unknown、正常停止服务；确认进程完全退出后，使用 SQLite backup API 或受控复制整组数据库文件。WAL 模式下不要在运行时只复制 `.sqlite` 忽略 `-wal`。备份可能包含全部聊天，应限制权限、加密、设定过期和销毁策略。
+备份建议：先全局停止、查看在途与 unknown，再正常停止应用以协调外部投递。用匹配服务端的 PostgreSQL 工具执行 pg_dump（可按专用 schema 导出 custom format），在独立目标用 pg_restore 验证恢复。pg_dump 可生成数据库一致性快照，但不保证与外部消息平台原子一致。凭据通过受保护的 pg_service.conf / .pgpass 等提供，不把含密码 URL 写在命令行或备份名中。备份可能包含全部聊天，应限制权限、加密、设定过期和销毁策略。
 
-清理开发数据时先停止实例并备份；核对配置解析出的**实际数据库绝对路径**和自己的所有权，再手动处理该文件及其 `-wal`、`-shm` 和闲置锁文件。本项目不提供通配符删除或自动清理任意配置路径的命令。删除数据库是不可逆的历史丢失；不要把恢复模式与删库重置混为一谈。
+清理开发数据时先停止实例并备份，核对实际数据库服务器、库名、schema 和所有权后再由管理员处理。本项目不提供自动删正式 schema/数据库或 Docker volume 的命令。删除 schema/数据库/卷会丢失历史，不要把恢复模式与删库重置混为一谈。
 
-`demo` 只清理它自己创建的临时目录，不读取或清理配置中的正式数据库。
+`demo` 只清理它自己创建并标记的临时 PostgreSQL schema，清理前核对标记和 schema owner，不使用配置中的正式业务 schema。硬终止可能留下临时 schema，不应按前缀盲删，需核对所有权与实例状态。
 
 ## 日志与常见问题
 
@@ -81,5 +82,7 @@ export BAEPILOT_API_TOKEN="<你自行生成的高熵 token>"
 | model_* / invalid_model_output | 看运行错误代码；不能用 Fake 成功掩盖真实服务失败 |
 | connector_not_implemented | 微信边界未实现；本次不实践接入 |
 | database_in_use | 使用已运行实例的 API 或先正常停止原实例 |
+| database_unavailable / database_error | 核对 PostgreSQL 连接、凭据、权限、TLS 与会话状态；数据库故障需排障恢复，不切换替代存储 |
+| unsupported_database_version | 核对目标 schema 和布局版本，不覆盖既有表 |
 
 日志中的异常类名只用于定位；不要为了排障把真实正文、密钥或整个数据库发到外部 issue。

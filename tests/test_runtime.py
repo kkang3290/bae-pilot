@@ -66,7 +66,7 @@ async def test_complex_conversation_uses_specialists(runtime):
     assert (await runtime.store.outbox(incoming.key))[0]["status"] == "sent"
 
 
-async def test_review_rewrite_is_bounded_and_never_sends_failed_review(tmp_path):
+async def test_review_rewrite_is_bounded_and_never_sends_failed_review(db_config):
     from bae_pilot.agents.schemas import ReviewResult
     from bae_pilot.config import Settings
     from bae_pilot.models.fake import FakeProvider
@@ -78,7 +78,7 @@ async def test_review_rewrite_is_bounded_and_never_sends_failed_review(tmp_path)
                 return ReviewResult(verdict="revise", reason="不符合策略")
             return await super().complete(role, context, schema)
 
-    r = Runtime(Settings(db_path=tmp_path / "review.sqlite", debounce_s=0), provider=NeverPasses())
+    r = Runtime(Settings(**db_config, debounce_s=0), provider=NeverPasses())
     await r.start(worker=False)
     try:
         incoming = event("我很失望")
@@ -131,7 +131,7 @@ async def test_known_bot_echo_does_not_trigger_reply_or_handoff(runtime):
     assert (await runtime.store.conversation(incoming.key))["mode"] == "auto"
 
 
-async def test_new_message_during_generation_supersedes_old_reply(tmp_path):
+async def test_new_message_during_generation_supersedes_old_reply(db_config):
     from bae_pilot.config import Settings
     from bae_pilot.models.fake import FakeProvider
     from bae_pilot.services.runtime import Runtime
@@ -146,7 +146,7 @@ async def test_new_message_during_generation_supersedes_old_reply(tmp_path):
             return await super().complete(role, context, schema)
 
     r = Runtime(
-        Settings(db_path=tmp_path / "race.sqlite", debounce_s=0, min_send_interval_s=0),
+        Settings(**db_config, debounce_s=0, min_send_interval_s=0),
         provider=Blocking(),
     )
     await r.start(worker=False)
@@ -159,9 +159,10 @@ async def test_new_message_during_generation_supersedes_old_reply(tmp_path):
         await r.drain()
         rows = await r.store.outbox(event().key)
         assert len(rows) == 1 and rows[0]["status"] == "sent"
-        async with r.store.db.execute(
-            "SELECT status FROM runs WHERE scope=? ORDER BY rowid", (event().key.scope,)
-        ) as cursor:
+        async with r.store.db.cursor() as cursor:
+            await cursor.execute(
+                "SELECT status FROM runs WHERE scope=%s ORDER BY run_seq", (event().key.scope,)
+            )
             assert [row["status"] for row in await cursor.fetchall()] == ["superseded", "completed"]
     finally:
         release.set()
@@ -189,15 +190,13 @@ async def test_delivery_timeout_is_unknown_not_blindly_retried(runtime):
     assert resolved["status"] == "sent"
 
 
-async def test_debounce_coalesces_messages_without_real_sleep(tmp_path):
+async def test_debounce_coalesces_messages_without_real_sleep(db_config):
     from bae_pilot.config import Settings
     from bae_pilot.services.runtime import Runtime
 
     clock = Clock()
     r = Runtime(
-        Settings(
-            db_path=tmp_path / "clock.sqlite", debounce_s=0.5, max_wait_s=2, min_send_interval_s=0
-        ),
+        Settings(**db_config, debounce_s=0.5, max_wait_s=2, min_send_interval_s=0),
         clock=clock,
     )
     await r.start(worker=False)
@@ -215,12 +214,12 @@ async def test_debounce_coalesces_messages_without_real_sleep(tmp_path):
         await r.close()
 
 
-async def test_same_conversation_id_on_other_account_is_isolated(tmp_path):
+async def test_same_conversation_id_on_other_account_is_isolated(db_config):
     from bae_pilot.config import Account, ConversationRule, Settings
     from bae_pilot.services.runtime import Runtime
 
     settings = Settings(
-        db_path=tmp_path / "isolation.sqlite",
+        **db_config,
         debounce_s=0,
         min_send_interval_s=0,
         accounts=[Account(), Account(account_id="second")],
@@ -269,11 +268,11 @@ async def test_unknown_outbound_origin_conservatively_hands_off(runtime):
     assert (await runtime.store.conversation(incoming.key))["mode"] == "handoff"
 
 
-async def test_restart_keeps_completed_delivery_and_deduplication(tmp_path):
+async def test_restart_keeps_completed_delivery_and_deduplication(db_config):
     from bae_pilot.config import Settings
     from bae_pilot.services.runtime import Runtime
 
-    settings = Settings(db_path=tmp_path / "restart.sqlite", debounce_s=0, min_send_interval_s=0)
+    settings = Settings(**db_config, debounce_s=0, min_send_interval_s=0)
     r = Runtime(settings)
     await r.start(worker=False)
     await r.ingest(event())
