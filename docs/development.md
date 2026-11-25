@@ -79,7 +79,7 @@ src/bae_pilot/
   app.py, config.py           # API 边界、显式配置
   domain.py                  # 不含框架副作用的统一契约
   agents/                    # 角色提示词、结构化输出、实际 StateGraph
-  models/                    # Fake 与可选官方 SDK 适配
+  models/                    # Fake/官方 SDK、共享字符测量与前台上下文打包
   connectors/                # 渠道协议、Mock、未实现微信
   services/                  # 入站、调度、唯一发送服务、异步记忆
   storage/                   # SQL schema、短事务仓储
@@ -90,6 +90,7 @@ src/bae_pilot/
 ## 测试层次
 
 - 领域/配置：输入约束、完整会话键和授权规则。
+- 上下文：纯函数字符/转义/阈值测试；在模型边界用 `tests/helpers.py` 的 RecordingProvider 捕获实际图请求，检查角色依赖、当前消息/回复锚点/完整记忆/事实原文保护和证据可见性。不能只以 Fake 的固定回答证明输入正确。
 - 运行时集成：实际编译图、独立 PostgreSQL 测试 schema、真实持久队列和 Mock 回执。
 - 可靠性：去重、旧结果失效、回声、人工接管、unknown、崩溃恢复、发送间隔、记忆证据和独立调度。
 - API：实际 ASGI 应用、鉴权、错误脱敏、流式请求体上限、分页及控制冲突。
@@ -97,6 +98,8 @@ src/bae_pilot/
 - CLI：演示不继承真实 Provider 环境；临时 schema 所有权校验与清理、数据库初始化、启动边界和配置错误不回显 token/连接密码。
 
 测试时只在平台或模型外部边界替换依赖；数据库始终为真实 PostgreSQL，不做 SQL mock、不使用替代存储。数据库测试显式要求 BAEPILOT_TEST_DATABASE_URL；未设置时明确失败，纯领域/Provider 测试不需要连接。每个数据库测试创建独立 baepilot_test_<uuid> schema，结束时核对标记并只清理自身 schema；测试 URL 必须指向可创建 schema 的专用合成开发/测试库。合成事件工厂和普通 Runtime 生命周期放在 `tests/helpers.py` 复用，重启/崩溃和受控并发测试保留自己的清理顺序。使用可控时钟及 asyncio.Event 构造竞态，不靠长时间 sleep。`Runtime.drain()` 只排空**当前到期**任务；未来到期任务需推进测试时钟，不是自动等待所有延迟任务。
+
+上下文策略详见 [上下文管理](context.md)。新增回归必须覆盖超过窗口仍完整确认 queued、201 条可容纳短消息、巨大积压预检不解码正文、outbound 晚于 queued 上界落库、来源只能引用实际可见消息，以及前台超限只失败一次/旧 revision 不接管/后台超限保留旧快照。涉及仓储的测试仍使用真实 PostgreSQL；预检测试只观察真实行解码，不替换 SQL 结果。字符缩减的合成测量注明是否包含覆盖元数据和角色结果，不宣称等价于 token、费用或情感质量改善。
 
 ## 扩展角色或模型
 

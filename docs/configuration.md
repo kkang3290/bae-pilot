@@ -75,12 +75,14 @@ style = "自然、简短、认真倾听；不虚构经历或承诺。"
 | `reply_ttl_s` | 60 | 生成后回复有效期；认领前过期则取消 |
 | `max_parallel` | 4 | 前台任务并发，1–32；另有最多一个后台记忆槽 |
 | `max_pending_jobs` | 1000 | pending/running 持久任务容量，1–10000 |
-| `max_job_attempts` | 3 | 单个任务有限尝试，1–5；另有 SDK 的网络重试 |
+| `max_job_attempts` | 3 | 可重试任务的有限尝试，1–5；context_too_large 不重试，SDK 网络重试另计 |
 | `max_reply_chars` | 1200 | 回复字符上限，不能高于统一发送契约的 1200 |
-| `context_message_limit` | 40 | 每次最近消息窗口，1–200 |
-| `max_context_chars` | 32000 | 完整序列化角色上下文字符预算，1000–200000 |
+| `context_message_limit` | 40 | 前台可选历史的最近窗口/后台 Memory 提取窗口，1–200；前台另加全部 queued 及最近 outbound |
+| `max_context_chars` | 32000 | 序列化角色上下文的硬字符预算，1000–200000；不是 token 或完整 API 请求预算 |
 
-超过上下文预算不会静默截掉关键内容继续发；该轮失败并按有限重试策略处理。`context_message_limit` 是滑动窗口，不是无限长历史；当前没有检索式长期记忆。事件文本上限 4000 字符，HTTP 请求体总上限 65536 字节。API 每实例 120 次/60 秒的简易尝试计数包括错误 token，`/healthz` 不计；并不是抗公网攻击方案。
+前台请求含覆盖说明，在 90% 硬预算以内不折叠；超过才整条折叠最旧的可选历史，通常以 80% 为目标。全部 queued、最近 outbound、完整记忆、风格及必要角色结果/事实原文始终保护。必要骨架已超过 80% 时只要求满足硬限，不为不可达目标删光可选历史；必要输入超过硬限则 `context_too_large`，该任务只尝试一次，仍属当前 revision 的前台运行立即转 handoff。Memory 保留原提取窗口，超限终止任务而不清空旧快照、不接管前台。阈值是固定比例，不增加配置项，详见 [上下文管理](context.md)。
+
+`context_message_limit` 不是本轮待处理消息数上限，更不是无限长历史；没有检索式长期记忆。字符测量使用 `len(json.dumps(context, ensure_ascii=False))`，包含折叠标记，不包含系统提示词、输出 Schema、完整 API 包装或输出 token；不要按字符/4 宣称满足模型窗口。事件文本上限 4000 字符，HTTP 请求体总上限 65536 字节。API 每实例 120 次/60 秒的简易尝试计数包括错误 token，`/healthz` 不计；并不是抗公网攻击方案。
 
 ## 模型
 

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 import uuid
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -13,6 +14,9 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from bae_pilot.domain import Acceptance, AppError, ConversationKey, IncomingEvent
+from bae_pilot.models.context import messages_lower_bound
+
+logger = logging.getLogger(__name__)
 
 
 def encode(value):
@@ -413,36 +417,82 @@ class Store:
                 ),
             )
 
-    async def snapshot(self, key, now, limit):
+    async def snapshot(self, key, now, limit, max_chars):
         async with self.transaction():
             row = await self._one("SELECT * FROM conversations WHERE scope=%s", (key.scope,))
-            pending = await self._one(
-                "SELECT MAX(record_id) AS last FROM events WHERE scope=%s AND status='queued'",
-                (key.scope,),
-            )
             if (
                 not row
-                or not pending["last"]
                 or row["mode"] != "auto"
                 or not await self._open(key)
                 or await self._unknown(key.scope)
             ):
                 return None
-            rows = await self._all(
-                "SELECT * FROM events WHERE scope=%s AND status!='echo' ORDER BY record_id DESC LIMIT %s",
-                (key.scope, limit),
+            pending = await self._one(
+                "SELECT COUNT(*) AS count,MAX(record_id) AS last,"
+                "SUM(char_length(payload->>'text')) AS text_chars FROM events "
+                "WHERE scope=%s AND record_id>%s AND status='queued'",
+                (key.scope, row["last_processed"]),
             )
+            if not pending["count"]:
+                return None
             run_id = uuid.uuid4().hex
             await self._execute(
                 "INSERT INTO runs(run_id,scope,revision,last_event_id,status,created_at) VALUES(%s,%s,%s,%s,'running',%s)",
                 (run_id, key.scope, row["revision"], pending["last"], timestamp(now)),
             )
-            return {
+            snapshot = {
                 "run_id": run_id,
                 "revision": row["revision"],
                 "last_event_id": pending["last"],
+                "queued_count": pending["count"],
+            }
+            lower_bound = messages_lower_bound(pending["count"], pending["text_chars"])
+            if lower_bound > max_chars:
+                logger.warning(
+                    "context_overflow",
+                    extra={
+                        "role": "snapshot",
+                        "required_lower_bound": lower_bound,
+                        "max_context_chars": max_chars,
+                        "queued_count": pending["count"],
+                    },
+                )
+                return {**snapshot, "context_overflow": True}
+            queued = await self._all(
+                "SELECT record_id,payload FROM events WHERE scope=%s AND record_id>%s "
+                "AND record_id<=%s AND status='queued' ORDER BY record_id",
+                (key.scope, row["last_processed"], pending["last"]),
+            )
+            queued_by_id = {item["record_id"]: item["payload"] for item in queued}
+            recent = await self._all(
+                "SELECT record_id,CASE WHEN record_id>%s AND record_id<=%s "
+                "AND status='queued' THEN NULL ELSE payload END AS payload "
+                "FROM events WHERE scope=%s AND status!='echo' ORDER BY record_id DESC LIMIT %s",
+                (row["last_processed"], pending["last"], key.scope, limit),
+            )
+            for item in recent:
+                if item["payload"] is None:
+                    item["payload"] = queued_by_id[item["record_id"]]
+            anchor = next(
+                (item for item in recent if item["payload"]["direction"] == "outbound"), None
+            )
+            if anchor is None:
+                anchor = await self._one(
+                    "SELECT record_id,payload FROM events WHERE scope=%s AND direction='outbound' "
+                    "AND status!='echo' ORDER BY record_id DESC LIMIT 1",
+                    (key.scope,),
+                )
+            candidates = {item["record_id"]: item["payload"] for item in recent}
+            candidates.update(queued_by_id)
+            if anchor:
+                candidates[anchor["record_id"]] = anchor["payload"]
+            return {
+                **snapshot,
+                "queued_event_ids": list(queued_by_id),
+                "outbound_anchor_id": anchor["record_id"] if anchor else None,
                 "messages": [
-                    {**item["payload"], "record_id": item["record_id"]} for item in reversed(rows)
+                    {**payload, "record_id": source_id}
+                    for source_id, payload in sorted(candidates.items())
                 ],
                 "memories": await self._memories(key.scope),
                 "memory_version": row["memory_version"],
@@ -464,10 +514,32 @@ class Store:
             )
             if not current:
                 return None
-            await self._execute(
-                "UPDATE events SET status='handled' WHERE scope=%s AND record_id<=%s AND status='queued'",
-                (key.scope, snapshot["last_event_id"]),
+            queued_ids = snapshot.get("queued_event_ids", [])
+            visible_ids = {item["record_id"] for item in snapshot.get("messages", [])}
+            if (
+                snapshot.get("context_overflow")
+                or not queued_ids
+                or len(queued_ids) != len(set(queued_ids))
+                or len(queued_ids) != snapshot["queued_count"]
+                or not set(queued_ids) <= visible_ids
+                or min(queued_ids) <= row["last_processed"]
+                or max(queued_ids) != snapshot["last_event_id"]
+            ):
+                raise AppError("incomplete_snapshot", 502)
+            pending = await self._one(
+                "SELECT COUNT(*) AS count FROM events WHERE scope=%s AND record_id>%s "
+                "AND record_id<=%s AND status='queued'",
+                (key.scope, row["last_processed"], snapshot["last_event_id"]),
             )
+            if pending["count"] != len(queued_ids):
+                raise AppError("incomplete_snapshot", 502)
+            confirmed = await self._all(
+                "UPDATE events SET status='handled' WHERE scope=%s AND record_id=ANY(%s) "
+                "AND record_id>%s AND record_id<=%s AND status='queued' RETURNING record_id",
+                (key.scope, queued_ids, row["last_processed"], snapshot["last_event_id"]),
+            )
+            if {item["record_id"] for item in confirmed} != set(queued_ids):
+                raise AppError("incomplete_snapshot", 502)
             await self._execute(
                 "UPDATE conversations SET last_processed=%s WHERE scope=%s",
                 (snapshot["last_event_id"], key.scope),

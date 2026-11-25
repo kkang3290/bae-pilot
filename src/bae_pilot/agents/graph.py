@@ -13,11 +13,13 @@ from bae_pilot.agents.schemas import (
     UnderstandingResult,
 )
 from bae_pilot.domain import AppError
-from bae_pilot.models.base import complete_role, model_messages
+from bae_pilot.models.base import complete_role
+from bae_pilot.models.context import prepare_context
 
 
 class TurnState(TypedDict, total=False):
     context: dict
+    required_ids: set[int]
     deep: bool
     rewrites: int
     trace: list[str]
@@ -61,29 +63,28 @@ class ConversationGraph:
     async def _call(self, role, state, schema):
         if len(state["trace"]) >= self.settings.model_max_calls:
             raise AppError("model_budget_exhausted", 502)
-        context = {
-            **state["context"],
-            **{
-                name: state[name]
-                for name in ("understanding", "strategy", "talk", "review")
-                if name in state
-            },
-        }
-        validated = await complete_role(self.provider, self.settings, role, context, schema)
+        prepared = prepare_context(
+            state["context"],
+            role=role,
+            state=state,
+            required_ids=state["required_ids"],
+            max_chars=self.settings.max_context_chars,
+        )
+        validated = await complete_role(
+            self.provider, self.settings, role, prepared.payload, schema
+        )
+        if role == "understanding" and any(
+            not set(item.source_event_ids) <= prepared.visible_source_ids
+            for item in validated.facts
+        ):
+            raise AppError("invalid_fact_evidence", 502)
         return {
             role: validated.model_dump(),
             "trace": [*state["trace"], role],
         }
 
     async def _understanding(self, state):
-        result = await self._call("understanding", state, UnderstandingResult)
-        valid_ids = {m["record_id"] for m in state["context"]["messages"]}
-        if any(
-            not set(item["source_event_ids"]) <= valid_ids
-            for item in result["understanding"]["facts"]
-        ):
-            raise AppError("invalid_fact_evidence", 502)
-        return {**result, "deep": True}
+        return {**await self._call("understanding", state, UnderstandingResult), "deep": True}
 
     async def _strategy(self, state):
         return await self._call("strategy", state, StrategyResult)
@@ -127,24 +128,28 @@ class ConversationGraph:
         return {"result": result.model_dump()}
 
     async def run(self, context: dict[str, Any]):
-        # Do not send channel/account/contact identifiers or internal run metadata to a model.
-        context = {
-            "messages": model_messages(context["messages"]),
-            "memories": [
-                {k: m[k] for k in ("kind", "content", "source_event_ids")}
-                for m in context.get("memories", [])
-            ],
-            "style": context.get("style", ""),
-            "history_window": context.get("history_window"),
-            "memory_version": context.get("memory_version", 0),
-        }
+        if context.get("context_overflow"):
+            raise AppError("context_too_large", 413)
+        # Direct callers without a Store snapshot must not accidentally mark all
+        # their input optional. Runtime always supplies the exact queued set.
+        required_ids = set(
+            context.get("queued_event_ids", [m["record_id"] for m in context["messages"]])
+        )
+        if context.get("outbound_anchor_id") is not None:
+            required_ids.add(context["outbound_anchor_id"])
         peer = [m for m in context["messages"] if m["direction"] == "inbound"]
         greeting = peer[-1]["text"].strip() if peer else ""
         deep = greeting not in {"你好", "嗨", "早安", "晚安", "在吗", "谢谢"}
         # Never inherit LangSmith tracing from the shell: fake/offline runs must stay local.
         with tracing_context(enabled=False):
             state = await self.compiled.ainvoke(
-                {"context": context, "deep": deep, "rewrites": 0, "trace": []},
+                {
+                    "context": context,
+                    "required_ids": required_ids,
+                    "deep": deep,
+                    "rewrites": 0,
+                    "trace": [],
+                },
                 config={"recursion_limit": 20, "callbacks": []},
             )
         return GraphResult.model_validate(state["result"])

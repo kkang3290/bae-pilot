@@ -160,7 +160,9 @@ async def test_control_change_cancels_all_selected_conversations_only(db_config,
         ]
         accepted = [await runtime.ingest(event) for event in events]
         for event in (events[0], events[2]):
-            snapshot = await runtime.store.snapshot(event.key, runtime.clock(), 40)
+            snapshot = await runtime.store.snapshot(
+                event.key, runtime.clock(), 40, runtime.settings.max_context_chars
+            )
             result = await runtime.graph.run(snapshot)
             await runtime.store.finish_run(
                 event.key, snapshot, result.model_dump(), runtime.clock(), 60, 0
@@ -225,6 +227,108 @@ async def test_memory_rejects_invalid_id_ranges_without_database_cast_errors(run
         )
     assert error.value.status == 502
     assert await runtime.store.memories(message().key) == []
+
+
+async def test_snapshot_includes_every_queued_message_beyond_recent_window(db_config):
+    from tests.helpers import RecordingProvider, running
+
+    provider = RecordingProvider()
+    async with running(db_config, provider=provider) as runtime:
+        accepted = [await runtime.ingest(message(event_id=f"queued-{i}")) for i in range(201)]
+        await runtime.drain()
+        assert [m["record_id"] for m in provider.calls[0][1]["messages"]] == [
+            a.record_id for a in accepted
+        ]
+        assert [row["status"] for row in await runtime.store.outbox(message().key)] == ["sent"]
+        state = await runtime.store.conversation(message().key)
+        assert state["last_processed"] == accepted[-1].record_id
+        assert await runtime.store._all("SELECT record_id FROM events WHERE status='queued'") == []
+        assert await runtime.store._all(
+            "SELECT COUNT(*) AS count FROM events WHERE status='handled'"
+        ) == [{"count": 201}]
+
+
+@pytest.mark.parametrize("max_chars", [1000, 32000])
+async def test_snapshot_decodes_queued_payloads_once_or_not_at_all_on_overflow(runtime, max_chars):
+    first = await runtime.ingest(message("旧" * 4000))
+    second = await runtime.ingest(message("新" * 4000, event_id="second"))
+    original_factory = runtime.store.db.row_factory
+    decoded_messages = []
+
+    def observe_rows(cursor):
+        build = original_factory(cursor)
+
+        def observe(values):
+            row = build(values)
+            if isinstance(row.get("payload"), dict):
+                decoded_messages.append(row)
+            return row
+
+        return observe
+
+    runtime.store.db.row_factory = observe_rows
+    try:
+        snapshot = await runtime.store.snapshot(message().key, runtime.clock(), 40, max_chars)
+    finally:
+        runtime.store.db.row_factory = original_factory
+    assert snapshot["queued_count"] == 2
+    if max_chars == 1000:
+        assert snapshot["context_overflow"] is True
+        assert "messages" not in snapshot and "queued_event_ids" not in snapshot
+        assert decoded_messages == []
+    else:
+        assert [row["record_id"] for row in decoded_messages] == [
+            first.record_id,
+            second.record_id,
+        ]
+        assert snapshot["queued_event_ids"] == [first.record_id, second.record_id]
+        assert [row["record_id"] for row in snapshot["messages"]] == [
+            first.record_id,
+            second.record_id,
+        ]
+    assert (await runtime.store.latest_run(message().key))["status"] == "running"
+    assert (await runtime.store.conversation(message().key))["last_processed"] == 0
+
+
+@pytest.mark.parametrize("damage", ["missing", "duplicate", "foreign", "overflow"])
+async def test_incomplete_snapshot_cannot_confirm_messages_or_create_outbox(runtime, damage):
+    from bae_pilot.agents.schemas import GraphResult
+
+    foreign = await runtime.ingest(message(conversation_id="not-authorized"))
+    first = await runtime.ingest(message())
+    second = await runtime.ingest(message(event_id="second"))
+    snapshot = await runtime.store.snapshot(
+        message().key, runtime.clock(), 40, runtime.settings.max_context_chars
+    )
+    snapshot["queued_event_ids"] = [first.record_id, second.record_id]
+    if damage == "missing":
+        snapshot["queued_event_ids"] = [second.record_id]
+        snapshot["messages"] = [
+            m for m in snapshot["messages"] if m["record_id"] == second.record_id
+        ]
+    elif damage == "duplicate":
+        snapshot["queued_event_ids"].append(second.record_id)
+    elif damage == "foreign":
+        snapshot["queued_event_ids"] = [foreign.record_id, second.record_id]
+        snapshot["messages"].append({"record_id": foreign.record_id})
+    else:
+        snapshot["context_overflow"] = True
+    with pytest.raises(AppError, match="incomplete_snapshot"):
+        await runtime.store.finish_run(
+            message().key,
+            snapshot,
+            GraphResult(
+                status="reply", reply="不应发送", trace=["talk", "validate"], model_calls=1
+            ).model_dump(),
+            runtime.clock(),
+            60,
+            0,
+        )
+    assert (await runtime.store.event(first.record_id))["status"] == "queued"
+    assert (await runtime.store.event(second.record_id))["status"] == "queued"
+    assert (await runtime.store.conversation(message().key))["last_processed"] == 0
+    assert (await runtime.store.latest_run(message().key))["status"] == "running"
+    assert await runtime.store.outbox(message().key) == []
 
 
 async def test_unreachable_postgres_fails_without_falling_back_or_leaking_password():

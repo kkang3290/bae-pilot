@@ -114,7 +114,10 @@ class Runtime:
                 rule = self.settings.rule_for(key)
                 if rule is not None:
                     snapshot = await self.store.snapshot(
-                        key, self.clock(), self.settings.context_message_limit
+                        key,
+                        self.clock(),
+                        self.settings.context_message_limit,
+                        self.settings.max_context_chars,
                     )
                     if snapshot:
                         result = await self.graph.run({**snapshot, "style": rule.style})
@@ -134,8 +137,11 @@ class Runtime:
             if snapshot:
                 await self.store.fail_run(snapshot["run_id"], code)
             attempts = job["attempts"] + 1
+            deterministic_overflow = isinstance(exc, AppError) and exc.code == "context_too_large"
             retry = (
-                self.clock() + 2**attempts if attempts < self.settings.max_job_attempts else None
+                self.clock() + 2**attempts
+                if not deterministic_overflow and attempts < self.settings.max_job_attempts
+                else None
             )
             await self.store.finish_job(job["job_id"], error=code, retry_at=retry)
             if retry is None and snapshot:

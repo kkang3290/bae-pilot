@@ -71,11 +71,14 @@ curl -sS \
 - 原生 JSONB、BIGINT identity/来源数组、TIMESTAMPTZ、短事务和会话级实例锁。
 - 精确会话白名单、自动回复、暂停、停止、本人接管、自身回声过滤。
 - 连续消息合并、过期草稿失效、同会话串行处理、有限后台重试。
+- 分角色上下文投影、按预算整条折叠历史、完整保护当前消息/记忆/事实证据，确定性超限不重试。
 - 未知投递阻塞与核对，不把超时当成可直接重发的失败。
 - Mock Connector、明确不可用的微信边界、Fake Provider、显式启用的 Anthropic Provider。
 - 本地管理 API、CLI、合成演示和真实 PostgreSQL 行为测试。
 
 记忆目前是“最近消息提炼的结构化快照”，不是知识图谱或检索式长期记忆。LangGraph 的执行图不等于图数据库。选型、更新语义和后端迁移边界见 [数据库与记忆](docs/database.md)。
+
+前台上下文优先做工程裁减，而不是每轮新增摘要调用：最近历史窗口之外的本轮待处理消息也必须完整可见；最近 outbound、已有记忆和被采用事实的原文始终保护。默认 32,000 字符硬限，超过 90% 才整理可选历史，通常以 80% 为目标。必要内容仍放不下则本轮失败并按 revision 接管，不原样重试。字符不是 token，窗口和折叠也不是语义无损；策略、来源校验及未实现的摘要/检索边界见 [上下文管理](docs/context.md)。
 
 ## 真实模型是显式选项
 
@@ -107,6 +110,7 @@ uv run --locked baepilot demo
 | [架构](docs/architecture.md) | 分层、状态机、持久化与恢复 |
 | [数据库与记忆](docs/database.md) | PostgreSQL、事务/锁、图数据库区别、记忆限制 |
 | [Agent](docs/agents.md) | 角色、输出、路由与记忆 |
+| [上下文管理](docs/context.md) | 分角色输入、预算、历史折叠、来源保护与超限处理 |
 | [Connector](docs/connectors.md) | 渠道协议、Mock 与未来微信接入 |
 | [配置](docs/configuration.md) | 白名单、身份、预算和秘密 |
 | [API](docs/api.md) | 认证、事件、查询和控制示例 |

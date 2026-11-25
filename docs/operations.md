@@ -53,7 +53,9 @@ uv run --locked baepilot --config config.example.toml serve
 - sending 发送标 unknown，绝不自动当成 failed 重发。
 - 草稿过期或 revision 不一致时不能发送。
 
-模型错误采用有限指数退避；达到 max_job_attempts 后，仍属于当前 revision 的前台失败转 handoff。新消息到来可能创建新任务，这不是全会话累计费用硬上限。后台记忆失败不撤销成功发送、不接管前台。进程退出期间如遇硬终止，下次启动按持久状态恢复。
+临时模型/网络错误采用有限指数退避；达到 max_job_attempts 后，仍属于当前 revision 的前台失败转 handoff。**确定性的 `context_too_large` 不原样重试**：先尝试工程折叠可选历史；必要输入仍过大就记录 failed，并仅对仍为当前 revision 且为 auto 的前台会话立即 handoff。超限不会创建 Outbox 或把当前消息确认为 handled；接管会将未处理消息置为 ignored_control。后台 Memory 超限终止该任务，保留旧快照及 memory_version，不撤销 sent、不接管前台。新消息可能创建新任务，这不是全会话累计费用硬上限；恢复 auto 后仍需新的入站，不补发旧积压。详见 [上下文管理](context.md)。
+
+接收 HTTP 202 仍只代表已入库。后来后台上下文超限不会把先前响应改成 HTTP 413；通过会话状态和 runs 的安全错误码判断处理结果。进程退出期间如遇硬终止，下次启动按持久状态恢复。
 
 ## 数据、隐私与备份
 
@@ -69,7 +71,7 @@ uv run --locked baepilot --config config.example.toml serve
 
 ## 日志与常见问题
 
-默认不打印正文、完整模型输入或 token；日志主要为任务/请求标识和错误代码。CLI 关闭 HTTP access log，避免 URL 中的会话标识进入常规访问日志。数据库仍保留完整业务数据，不等于数据未持久化。
+默认不打印正文、完整模型输入或 token；日志主要为任务/请求标识和错误代码。上下文模块以 INFO 的 `context_prepared` LogRecord 附加字段记录 role、original_chars、final_chars、retained_messages、folded_messages、retained_memories，统计以角色投影后的输入为基线；超限使用 WARNING `context_overflow`，只带大小/计数信息。这些字段可由日志 handler 提取，不新增 API 字段，也不代表 token 或缓存计量。CLI 关闭 HTTP access log，避免 URL 中的会话标识进入常规访问日志。数据库仍保留完整业务数据，不等于数据未持久化。
 
 | 现象 | 检查 |
 |---|---|
@@ -79,6 +81,8 @@ uv run --locked baepilot --config config.example.toml serve
 | queue_full | 排查慢任务/模型，等待或暂停输入；不要盲增上限 |
 | 没有自动回复 | 精确白名单、所有 mode、unknown、静默窗口、未来发送间隔 |
 | pending 长时间不发 | 是否到 not_before、是否已过 TTL、Worker 是否运行 |
+| context_too_large | 必要输入超出字符硬限；该任务不重试。看 runs/会话模式，前台接管后核对配置和记忆体积，不能通过重放旧 event_id 补发 |
+| incomplete_snapshot | 内部快照不完整，不能确认消息或创建待发送回复；保留运行记录定位，不手工推进 last_processed |
 | model_* / invalid_model_output | 看运行错误代码；不能用 Fake 成功掩盖真实服务失败 |
 | connector_not_implemented | 微信边界未实现；本次不实践接入 |
 | database_in_use | 使用已运行实例的 API 或先正常停止原实例 |
