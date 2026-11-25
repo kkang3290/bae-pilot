@@ -17,7 +17,22 @@ dependencies = [
 
 [project.optional-dependencies]
 anthropic = ["anthropic>=2.13,<3"]
-dev = ["pytest>=9.2,<10", "pytest-asyncio>=1,<2", "httpx>=0.28,<1", "ruff>=0.11,<1", "setuptools>=80"]
+
+[dependency-groups]
+dev = ["pytest>=9.2,<10", "pytest-asyncio>=1,<2", "httpx>=0.28,<1", "ruff>=0.11,<1"]
+
+[tool.uv]
+required-version = "==0.13.9"
+preview-features = ["build-dependency-hashes"]
+# Reject third-party source builds; the reviewed local project may still be built.
+no-build = true
+require-build-hashes = true
+build-constraint-dependencies = [
+  { requirement = "setuptools==84.2.1", hashes = [
+    "sha256:3ff8b3b5492a0aa66960f4419365a86b84e013070d4313e4d4a6894f5d64d6bc",
+    "sha256:ca140b45d5325a9478f880e351484f62fef15f336462e449ca0c03c873d589c2",
+  ] },
+]
 
 [project.scripts]
 baepilot = "bae_pilot.cli:main"

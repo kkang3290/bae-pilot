@@ -5,8 +5,8 @@
 ```bash
 export BAEPILOT_DATABASE_URL="<你自行配置的 PostgreSQL URL>"
 export BAEPILOT_API_TOKEN="<你自行生成的高熵 token>"
-.venv/bin/baepilot --config config.example.toml init-db
-.venv/bin/baepilot --config config.example.toml serve
+uv run --locked baepilot --config config.example.toml init-db
+uv run --locked baepilot --config config.example.toml serve
 ```
 
 不要真的使用上面的说明性占位字符串。初始化命令不需要管理 token 或真实模型凭据；只有 HTTP 服务要求 token。端口默认 8765，可通过 `serve --port 8766` 更改，host 只能是 loopback。使用 Ctrl-C 正常退出；本项目不安装系统服务。

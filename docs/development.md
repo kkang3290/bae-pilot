@@ -2,46 +2,71 @@
 
 ## 环境与安装
 
-项目声明 Python ≥3.11，当前实际验收环境为 **macOS arm64 + Python 3.14.10 + PostgreSQL 16**。推荐 3.14；尚未对所有声明支持版本和平台运行测试。3.15 在本环境缺少 zstandard 所需二进制 wheel，因此没有改成从来源不明脚本编译，也没有替换系统 Python。
+项目声明 Python ≥3.11，当前实际验收环境为 **macOS arm64 + Python 3.14.10 + PostgreSQL 16 + uv 0.13.9**。`.python-version` 固定本地开发解释器为 3.14.10，不收窄包元数据中的兼容范围；尚未对所有声明支持版本和平台运行测试。3.15 在本环境缺少 zstandard 所需二进制 wheel，不通过隐式源码编译绕过，也不替换系统 Python。
+
+先安装 uv 0.13.9，项目通过 `tool.uv.required-version` 拒绝其他版本。安装方式见 [uv 官方指南](https://docs.astral.sh/uv/getting-started/installation/)。如果不希望全局安装，可使用独立工具环境引导一次（这里的 pip 仅用于安装 uv，不管理项目依赖）：
 
 ```bash
-python3.14 -m venv .venv
-.venv/bin/python -m pip install --only-binary=:all: --require-hashes -r requirements.lock
-.venv/bin/python -m pip install --no-build-isolation --no-deps -e .
-# 先按 README 启动 PostgreSQL，并设置 BAEPILOT_DATABASE_URL
-.venv/bin/baepilot demo
+python3 -m venv .bootstrap-venv
+.bootstrap-venv/bin/python -m pip install --only-binary=:all: "uv==0.13.9"
+export PATH="$PWD/.bootstrap-venv/bin:$PATH"
+uv --version
 ```
 
-已有项目环境时无需重建。首次安装依赖需要网络；演示只访问 PostgreSQL，不访问真实模型/平台，但不再是零网络运行。Windows 使用 `.venv\Scripts\python` 等对应入口；该平台分支未实机验收。
+然后在仓库根目录执行：
+
+```bash
+uv sync --locked --all-extras
+# 先按 README 启动 PostgreSQL，并设置 BAEPILOT_DATABASE_URL
+uv run --locked baepilot demo
+```
+
+uv 自动创建/同步 `.venv`，无需激活或手工 editable 安装；缺少对应解释器时可下载 uv 管理的 Python，不修改系统 Python。已有环境可继续同步，无需删除重建。首次解析/下载需要网络；演示只访问 PostgreSQL，不访问真实模型/平台。Windows 使用相同的 `uv sync` / `uv run` 入口，该平台尚未实机验收。
 
 ### 依赖策略
 
-- `pyproject.toml` 声明范围和可选依赖，是源配置。
-- `requirements.lock` 是唯一安装锁文件，含 dev、可选 Anthropic SDK 和本项目 editable 构建用 setuptools，精确版本和分发哈希；不含本机源码绝对路径。
-- 第三方依赖只安装 wheel，`--only-binary=:all:` 拒绝隐式源码构建。哈希检查适用于重新安装，不会重新验证已经满足的包；怀疑环境污染时创建新虚拟环境复验。
-- 本项目使用已锁定 setuptools 在本地执行 editable 构建，`--no-build-isolation --no-deps` 避免额外隐式解析。不要将此命令用于未经审阅的第三方源码。
-- 生成器为 uv 0.13.9，升级锁文件需显式审查新增包、版本、来源和测试结果。命令示例（使用你在隔离工具环境安装的同版本 uv）：
+- `pyproject.toml` 声明运行依赖、可选 `anthropic` extra 和 `dev` dependency group。uv 默认安装 dev；完整测试还需 `--all-extras`，安装 SDK 不会启用真实调用。
+- `uv.lock` 是唯一依赖锁文件，记录依赖图、精确版本、平台条件、来源和分发哈希；与 `pyproject.toml` 一起提交，不维护第二份安装锁文件。项目本身使用相对 editable 来源，不写入本机绝对路径。
+- `uv sync --locked` 检查锁文件是否与声明一致，过期时失败；不要用 `--frozen` 掩盖声明与锁的不一致。`uv run --locked` 同样拒绝隐式改锁。`uv sync` 默认移除环境中未声明的包，不用其他安装器向 `.venv` 混装依赖。
+- `tool.uv.no-build=true` 禁止第三方依赖的隐式源码构建；支持的预构建 wheel 不可用时失败。uv 仍允许已审阅的第一方项目/editable 构建，也可能复用此前源码构建的缓存 wheel，因此这不是任意现有缓存的来源证明。复验来源时使用全新的缓存和虚拟环境。
+- 本项目保留 setuptools 构建后端，使用隔离构建。`tool.uv.build-constraint-dependencies` 将其固定为已验收的 84.2.1 并列出分发哈希；`require-build-hashes=true` 拒绝未提供哈希的构建依赖。setuptools 不再作为运行或开发环境依赖。构建哈希功能目前是 uv 的 preview，因此显式开启该功能并固定 uv 版本。
+- `uv sync --locked --no-dev` 只安装基础运行环境；真实模型适配再加 `--extra anthropic`。运行时也应使用相同选择，例如 `uv run --locked --no-dev --extra anthropic baepilot --config config.example.toml serve`。不带 extra 的 Fake/Mock 不依赖可选模型 SDK；不带 dev 的环境不能运行测试和 Ruff。
+
+日常依赖操作（占位符需替换为真实包名；不要原样复制）：
 
 ```bash
-uv pip compile pyproject.toml --all-extras --python .venv/bin/python \
-  --universal --generate-hashes --only-binary=:all: --output-file requirements.lock
+uv add <package>                 # 运行依赖
+uv add --dev <package>           # 开发工具
+uv add --optional anthropic <package>
+uv remove <package>
+uv remove --dev <package>
+uv lock                         # 修改声明后更新锁文件，尽量保留既有版本
+uv lock --upgrade-package <package>  # 显式升级某个依赖
+uv sync --locked --all-extras
 ```
 
-`pip check` 只验证依赖一致性，**不是已知漏洞审计或供应链安全证明**。pip 没有内置漏洞审计子命令；发布前还需引入经审阅的漏洞审计工具及 CI 策略，记录不可修复项的可达性与复查时间。本次没有声称完成生产发布安全审计。
+每次审阅新增包、版本、来源、平台分支和构建约束，运行完整回归。升级构建后端时同步核对并更新版本与哈希，不关闭构建哈希校验来绕过失败。uv 工具升级也需审阅后修改 `required-version` 并重新验收。
+
+`uv lock --check` 检查声明与锁的一致性，`uv pip check` 只检查已安装依赖兼容性，二者都不是漏洞审计。`uv audit --locked` 使用 uv 原生审计命令，查询外部漏洞服务并发送包名/版本，不发送聊天或密钥；当前 uv 将此命令标为实验性。审计只覆盖服务已知通告，不能证明不存在未知漏洞或供应链问题；构建后端也需单独审阅。发布前复跑审计，按运行/构建/测试路径分析可达性与修复版本，记录延期理由和复查日期，不强制跨版本修复，也不将本次基础验证描述为生产安全认证。
 
 ## 开发循环
 
 遵循 TDD：写行为测试 → 运行并看到预期失败 → 最小实现 → 完整回归 → 重构。不要只检查某个角色被调用，而忽略真实 PostgreSQL、Outbox 和回执；不要在测试中复制生产算法计算预期值。
 
 ```bash
+uv sync --locked --all-extras
 # 仅限专用合成开发/测试库；不要指向生产库
 export BAEPILOT_TEST_DATABASE_URL="$BAEPILOT_DATABASE_URL"
-.venv/bin/python -m pytest
-.venv/bin/ruff check .
-.venv/bin/ruff format --check .
-.venv/bin/python -m pip check
+uv lock --check
+uv pip check
+uv run --locked --all-extras pytest
+uv run --locked ruff check .
+uv run --locked ruff format --check .
+uv audit --locked
 # 先按 README 启动 PostgreSQL，并设置 BAEPILOT_DATABASE_URL
-.venv/bin/baepilot demo
+uv run --locked baepilot demo
+# 验证源码包和 wheel；输出到已忽略的 dist/
+uv build
 ```
 
 当前 LangSmith 间接依赖在 Python 3.14 导入时会发出 `asyncio.iscoroutinefunction` 的 DeprecationWarning（指向未来 3.16），不是本项目测试失败。暂未修改第三方包或全局屏蔽警告；升级依赖后复查。pytest 禁用 LangSmith 自动插件，图运行也显式禁用 tracing。
